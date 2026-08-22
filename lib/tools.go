@@ -15,8 +15,8 @@ import (
 
 type WriteTextFileParams struct {
 	FilePath  string `json:"file_path" mapstructure:"file_path"`
-	Content   string `json:"content"`
-	Overwrite bool   `json:"overwrite"`
+	Content   string `json:"content" mapstructure:"content"`
+	Overwrite bool   `json:"overwrite" mapstructure:"overwrite"`
 }
 
 func WriteTextFile(params any) string {
@@ -149,8 +149,8 @@ var insertLineTool anthropic.ToolUnionParam = anthropic.ToolUnionParam{
 
 type PatchFileParams struct {
 	FilePath string `json:"file_path" mapstructure:"file_path"`
-	Search   string `json:"search"`
-	Replace  string `json:"replace"`
+	Search   string `json:"search" mapstructure:"search"`
+	Replace  string `json:"replace" mapstructure:"replace"`
 }
 
 func PatchFile(params any) string {
