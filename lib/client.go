@@ -2,7 +2,10 @@ package lib
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"log"
+	"os"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -10,12 +13,17 @@ import (
 
 const (
 	MAX_TOKENS = 1024
+
+	// ANSI escapes used to visually separate thinking from the final answer.
+	dim   = "\033[2;3m"
+	reset = "\033[0m"
 )
 
 type ScoutClient struct {
 	Client   anthropic.Client
 	Messages []anthropic.MessageParam
 	Model    anthropic.Model
+	Out      io.Writer
 }
 
 func CreateClient(apiKey, model string) *ScoutClient {
@@ -24,6 +32,7 @@ func CreateClient(apiKey, model string) *ScoutClient {
 		Client:   client,
 		Model:    model,
 		Messages: []anthropic.MessageParam{},
+		Out:      os.Stdout,
 	}
 }
 
@@ -35,53 +44,105 @@ func (sc *ScoutClient) AddMessage(content string) {
 func (sc *ScoutClient) AddAssistantMessage(response *anthropic.Message) {
 	var assistantContent []anthropic.ContentBlockParamUnion
 	for _, block := range response.Content {
-		log.Println("Adding assistant message block:", block.Type, "with content:", block.Text)
 		assistantContent = append(assistantContent, block.ToParam())
+	}
+
+	// An empty assistant turn is rejected by the API, so don't record one.
+	if len(assistantContent) == 0 {
+		return
 	}
 
 	sc.Messages = append(sc.Messages, anthropic.NewAssistantMessage(assistantContent...))
 }
 
-func (sc *ScoutClient) SendMessage(ctx context.Context) (*anthropic.Message, error) {
-	log.Println("Sending message with", len(sc.Messages), "messages to model", sc.Model)
-	response, err := sc.Client.Messages.New(ctx, anthropic.MessageNewParams{
+func (sc *ScoutClient) params() anthropic.MessageNewParams {
+	return anthropic.MessageNewParams{
 		Model:      sc.Model,
 		Messages:   sc.Messages,
 		Tools:      Tools,
 		ToolChoice: ToolChoice,
 		MaxTokens:  MAX_TOKENS,
-	})
-	return response, err
+		Thinking: anthropic.ThinkingConfigParamUnion{
+			OfAdaptive: &anthropic.ThinkingConfigAdaptiveParam{
+				// Without this, thinking blocks stream with empty text.
+				Display: anthropic.ThinkingConfigAdaptiveDisplaySummarized,
+			},
+		},
+	}
 }
 
-func (sc *ScoutClient) CallTool(ctx context.Context, toolID, toolName string, params any) string {
-	log.Println("Calling tool:", toolName, "with params:", params)
-	toolFunc, exists := ToolMappings[toolName]
-	if !exists {
-		log.Fatalf("Tool %s not found in ToolMappings", toolName)
-	}
-	toolResult := toolFunc(params)
+// SendMessage streams the next assistant turn, writing thinking, text and tool
+// calls to sc.Out as they arrive, and returns the accumulated message.
+func (sc *ScoutClient) SendMessage(ctx context.Context) (*anthropic.Message, error) {
+	log.Println("Sending message with", len(sc.Messages), "messages to model", sc.Model)
 
-	log.Println("Tool", toolName, "returned result:", toolResult)
-	sc.Messages = append(sc.Messages, anthropic.NewUserMessage(anthropic.NewToolResultBlock(toolID, toolResult, false)))
+	stream := sc.Client.Messages.NewStreaming(ctx, sc.params())
 
-	followup, err := sc.Client.Messages.New(ctx, anthropic.MessageNewParams{
-		Model:      sc.Model,
-		MaxTokens:  MAX_TOKENS,
-		Tools:      Tools,
-		ToolChoice: ToolChoice,
-		Messages:   sc.Messages,
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
+	message := anthropic.Message{}
+	thinking := false
 
-	// display response and tool calls
-	for _, block := range followup.Content {
-		if block.Type == "text" {
-			return block.Text
+	for stream.Next() {
+		event := stream.Current()
+		if err := message.Accumulate(event); err != nil {
+			return nil, fmt.Errorf("accumulating stream event: %w", err)
+		}
+
+		switch event := event.AsAny().(type) {
+		case anthropic.ContentBlockStartEvent:
+			switch event.ContentBlock.Type {
+			case "thinking":
+				thinking = true
+				fmt.Fprintf(sc.Out, "%s[thinking] ", dim)
+			case "redacted_thinking":
+				fmt.Fprintf(sc.Out, "%s[thinking redacted]%s\n", dim, reset)
+			case "tool_use":
+				fmt.Fprintf(sc.Out, "[tool: %s]\n", event.ContentBlock.Name)
+			}
+
+		case anthropic.ContentBlockDeltaEvent:
+			switch delta := event.Delta.AsAny().(type) {
+			case anthropic.ThinkingDelta:
+				fmt.Fprint(sc.Out, delta.Thinking)
+			case anthropic.TextDelta:
+				fmt.Fprint(sc.Out, delta.Text)
+			}
+
+		case anthropic.ContentBlockStopEvent:
+			if thinking {
+				fmt.Fprint(sc.Out, reset)
+				thinking = false
+			}
+			fmt.Fprintln(sc.Out)
 		}
 	}
 
-	return ""
+	if err := stream.Err(); err != nil {
+		return nil, err
+	}
+
+	return &message, nil
+}
+
+// ExecuteTool runs a single tool call and returns the tool_result block for it.
+func (sc *ScoutClient) ExecuteTool(toolID, toolName string, params any) anthropic.ContentBlockParamUnion {
+	log.Println("Calling tool:", toolName, "with params:", params)
+
+	toolFunc, exists := ToolMappings[toolName]
+	if !exists {
+		return anthropic.NewToolResultBlock(toolID, fmt.Sprintf("error: unknown tool %q", toolName), true)
+	}
+
+	toolResult := toolFunc(params)
+	log.Println("Tool", toolName, "returned result:", toolResult)
+
+	return anthropic.NewToolResultBlock(toolID, toolResult, false)
+}
+
+// AddToolResults records every result from one assistant turn as a single user
+// message; splitting them across messages discourages parallel tool use.
+func (sc *ScoutClient) AddToolResults(results []anthropic.ContentBlockParamUnion) {
+	if len(results) == 0 {
+		return
+	}
+	sc.Messages = append(sc.Messages, anthropic.NewUserMessage(results...))
 }

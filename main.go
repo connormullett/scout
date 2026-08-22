@@ -21,31 +21,26 @@ func main() {
 		// get user input
 		fmt.Print(" > ")
 
-		for scanner.Scan() {
-			input := scanner.Text()
-			if input == "exit" {
-				fmt.Println("Exiting...")
-				return
+		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil {
+				log.Fatal(err)
 			}
-			client.AddMessage(input)
-			break
+			return // stdin closed
 		}
 
-		if err := scanner.Err(); err != nil {
-			log.Fatal(err)
+		input := scanner.Text()
+		if input == "exit" {
+			fmt.Println("Exiting...")
+			return
 		}
+		client.AddMessage(input)
 
 		stop := false
 		for !stop {
-			// execute client with input
+			// the response streams to stdout as it is generated
 			response, err := client.SendMessage(ctx)
 			if err != nil {
 				log.Fatal(err)
-			}
-			for _, block := range response.Content {
-				if block.Type == "text" {
-					fmt.Println(block.Text)
-				}
 			}
 
 			client.AddAssistantMessage(response)
@@ -53,37 +48,29 @@ func main() {
 			log.Println("Stop reason:", response.StopReason)
 			switch response.StopReason {
 			case anthropic.StopReasonToolUse:
-				// get response and tool calls
-				var toolUse anthropic.ContentBlockUnion
+				// run every tool call in this turn, then hand all the results
+				// back in a single user message
+				var results []anthropic.ContentBlockParamUnion
 				for _, block := range response.Content {
-					if block.Type == "tool_use" {
-						toolUse = block
-						break
+					if block.Type != "tool_use" {
+						continue
 					}
-				}
 
-				var toolParams map[string]any
-				err = json.Unmarshal(toolUse.Input, &toolParams)
-				if err != nil {
-					log.Fatal(err)
-				}
+					var toolParams map[string]any
+					if err := json.Unmarshal(block.Input, &toolParams); err != nil {
+						log.Fatal(err)
+					}
 
-				clientResponse := client.CallTool(ctx, toolUse.ID, toolUse.Name, toolParams)
-				if clientResponse != "" {
-					fmt.Println(clientResponse)
+					results = append(results, client.ExecuteTool(block.ID, block.Name, toolParams))
 				}
+				client.AddToolResults(results)
 
 			case anthropic.StopReasonEndTurn:
-				// get response and tool calls
-				for _, block := range response.Content {
-					if block.Type == "text" {
-						fmt.Println(block.Text)
-					}
-				}
 				stop = true
 
 			default:
 				log.Println("Unknown stop reason:", response.StopReason)
+				stop = true
 			}
 		}
 	}
