@@ -9,8 +9,7 @@ import (
 )
 
 const (
-	USER      = "user"
-	ASSISTANT = "assistant"
+	MAX_TOKENS = 1024
 )
 
 type ScoutClient struct {
@@ -50,7 +49,7 @@ func (sc *ScoutClient) SendMessage(ctx context.Context) (*anthropic.Message, err
 		Messages:   sc.Messages,
 		Tools:      Tools,
 		ToolChoice: ToolChoice,
-		MaxTokens:  1024,
+		MaxTokens:  MAX_TOKENS,
 	})
 	return response, err
 }
@@ -68,7 +67,7 @@ func (sc *ScoutClient) CallTool(ctx context.Context, toolID, toolName string, pa
 
 	followup, err := sc.Client.Messages.New(ctx, anthropic.MessageNewParams{
 		Model:      sc.Model,
-		MaxTokens:  1024,
+		MaxTokens:  MAX_TOKENS,
 		Tools:      Tools,
 		ToolChoice: ToolChoice,
 		Messages:   sc.Messages,
