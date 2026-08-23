@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/viper"
 )
@@ -46,11 +47,21 @@ func InitCommand() error {
 		baseURL = viper.GetString("base_url")
 	}
 
+	showThinkingStr := Scan(scanner, "Show model thinking? (Y/n): ")
+	showThinking := viper.GetBool("show_thinking")
+	if showThinkingStr != "" {
+		showThinking, err = strconv.ParseBool(normalizeYesNo(showThinkingStr))
+		if err != nil {
+			return fmt.Errorf("invalid value for show thinking: %v", err)
+		}
+	}
+
 	config = &Config{
-		APIKey:    apiKey,
-		Model:     model,
-		MaxTokens: maxTokens,
-		BaseURL:   baseURL,
+		APIKey:       apiKey,
+		Model:        model,
+		MaxTokens:    maxTokens,
+		BaseURL:      baseURL,
+		ShowThinking: showThinking,
 	}
 
 	if err := config.Validate(); err != nil {
@@ -58,6 +69,19 @@ func InitCommand() error {
 	}
 
 	return WriteConfig(config)
+}
+
+// normalizeYesNo maps common yes/no shorthand to values strconv.ParseBool
+// understands, so prompts like "Y/n" behave as expected.
+func normalizeYesNo(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "y", "yes":
+		return "true"
+	case "n", "no":
+		return "false"
+	default:
+		return s
+	}
 }
 
 func Scan(scanner *bufio.Scanner, prompt string) string {

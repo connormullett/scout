@@ -9,10 +9,11 @@ import (
 )
 
 type Config struct {
-	APIKey    string `mapstructure:"api_key"`
-	Model     string
-	MaxTokens int    `mapstructure:"max_tokens"`
-	BaseURL   string `mapstructure:"base_url"`
+	APIKey       string `mapstructure:"api_key"`
+	Model        string
+	MaxTokens    int    `mapstructure:"max_tokens"`
+	BaseURL      string `mapstructure:"base_url"`
+	ShowThinking bool   `mapstructure:"show_thinking"`
 }
 
 func SetConfigDefaults() {
@@ -23,6 +24,7 @@ func SetConfigDefaults() {
 	viper.SetDefault("base_url", "http://localhost:11434")
 	viper.SetDefault("max_tokens", 10000)
 	viper.SetDefault("model", "gemma4:e4b")
+	viper.SetDefault("show_thinking", true)
 }
 
 func LoadConfig() (*Config, error) {
@@ -51,6 +53,7 @@ func WriteConfig(config *Config) error {
 	viper.Set("model", config.Model)
 	viper.Set("max_tokens", config.MaxTokens)
 	viper.Set("base_url", config.BaseURL)
+	viper.Set("show_thinking", config.ShowThinking)
 
 	err := viper.WriteConfig()
 	if err != nil {

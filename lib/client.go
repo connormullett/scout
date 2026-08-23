@@ -80,6 +80,7 @@ func (sc *ScoutClient) SendMessage(ctx context.Context) (*anthropic.Message, err
 
 	message := anthropic.Message{}
 	thinking := false
+	showThinking := sc.Config.ShowThinking
 
 	for stream.Next() {
 		event := stream.Current()
@@ -92,9 +93,13 @@ func (sc *ScoutClient) SendMessage(ctx context.Context) (*anthropic.Message, err
 			switch event.ContentBlock.Type {
 			case "thinking":
 				thinking = true
-				fmt.Fprintf(sc.Out, "%s[thinking] ", dim)
+				if showThinking {
+					fmt.Fprintf(sc.Out, "%s[thinking] ", dim)
+				}
 			case "redacted_thinking":
-				fmt.Fprintf(sc.Out, "%s[thinking redacted]%s\n", dim, reset)
+				if showThinking {
+					fmt.Fprintf(sc.Out, "%s[thinking redacted]%s\n", dim, reset)
+				}
 			case "tool_use":
 				fmt.Fprintf(sc.Out, "[tool: %s]\n", event.ContentBlock.Name)
 			}
@@ -102,17 +107,23 @@ func (sc *ScoutClient) SendMessage(ctx context.Context) (*anthropic.Message, err
 		case anthropic.ContentBlockDeltaEvent:
 			switch delta := event.Delta.AsAny().(type) {
 			case anthropic.ThinkingDelta:
-				fmt.Fprint(sc.Out, delta.Thinking)
+				if showThinking {
+					fmt.Fprint(sc.Out, delta.Thinking)
+				}
 			case anthropic.TextDelta:
 				fmt.Fprint(sc.Out, delta.Text)
 			}
 
 		case anthropic.ContentBlockStopEvent:
 			if thinking {
-				fmt.Fprint(sc.Out, reset)
+				if showThinking {
+					fmt.Fprint(sc.Out, reset)
+					fmt.Fprintln(sc.Out)
+				}
 				thinking = false
+			} else {
+				fmt.Fprintln(sc.Out)
 			}
-			fmt.Fprintln(sc.Out)
 		}
 	}
 

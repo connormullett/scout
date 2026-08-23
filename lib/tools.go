@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -258,23 +259,45 @@ func ExecuteShellCommand(params any) string {
 		return fmt.Sprintf("error: failed to decode parameters: %v", err)
 	}
 
-	cmd := strings.Fields(oParams.Command)
-	if len(cmd) == 0 {
+	command := strings.TrimSpace(oParams.Command)
+	if command == "" {
 		return "error: no command provided"
 	}
 
-	output, err := exec.Command(cmd[0], cmd[1:]...).CombinedOutput()
+	shell, flag := shellInterpreter()
+	cmd := exec.Command(shell, flag, command)
+
+	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Sprintf("error: failed to execute command: %v", err)
+		return fmt.Sprintf("error: failed to execute command: %v\noutput:\n%s", err, output)
 	}
 
 	return string(output)
 }
 
+// shellInterpreter returns the shell binary and the flag used to run a
+// command string through it, so shell_command supports pipes, redirects,
+// command separators, quoting and builtins the way a real shell would,
+// rather than naively splitting on whitespace.
+func shellInterpreter() (string, string) {
+	if runtime.GOOS == "windows" {
+		if shell := os.Getenv("COMSPEC"); shell != "" {
+			return shell, "/C"
+		}
+		return "cmd", "/C"
+	}
+
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	return shell, "-c"
+}
+
 var shellCommandTool anthropic.ToolUnionParam = anthropic.ToolUnionParam{
 	OfTool: &anthropic.ToolParam{
 		Name:        "shell_command",
-		Description: anthropic.String("Executes a shell command and returns the output."),
+		Description: anthropic.String("Executes a shell command via the user's shell (or /bin/sh) and returns the combined stdout/stderr output. Supports pipes, redirects, command separators (&&, ;, ||), quoting and builtins like cd, since the command is interpreted by a real shell rather than being split on whitespace."),
 		InputSchema: anthropic.ToolInputSchemaParam{
 			Properties: map[string]any{
 				"command": map[string]any{
