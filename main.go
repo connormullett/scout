@@ -46,6 +46,7 @@ func main() {
 
 	for {
 		// get user input
+		lib.Scan(scanner, " > ")
 		fmt.Print(" > ")
 
 		if !scanner.Scan() {
