@@ -2,14 +2,13 @@ package lib
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
-	"github.com/google/uuid"
 )
 
 const (
@@ -18,40 +17,45 @@ const (
 	reset = "\033[0m"
 )
 
-type ChatSession struct {
-	SessionID string
-	History   []anthropic.MessageParam
-	// todo: add mutex for concurrency safety
-}
-
 type ScoutClient struct {
 	Client   anthropic.Client
 	Messages []anthropic.MessageParam
 	Model    anthropic.Model
 	Config   *Config
 	Out      io.Writer
+	Cwd      string
 	Session  *ChatSession
 }
 
 func CreateClient(config *Config) *ScoutClient {
 	client := anthropic.NewClient(option.WithAPIKey(config.APIKey), option.WithBaseURL(config.BaseURL))
+
+	// Sessions are scoped to the directory scout was started in so that
+	// `/load` only offers conversations from this project.
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = ""
+	}
+
 	return &ScoutClient{
 		Client:   client,
 		Model:    anthropic.Model(config.Model),
 		Messages: []anthropic.MessageParam{},
 		Config:   config,
 		Out:      os.Stdout,
-		Session: &ChatSession{
-			SessionID: uuid.New().String(),
-			History:   []anthropic.MessageParam{},
-		},
+		Cwd:      cwd,
+		Session:  NewChatSession(cwd, time.Now()),
 	}
 }
 
 func (sc *ScoutClient) AddMessage(content string) {
-	message := anthropic.NewUserMessage(anthropic.NewTextBlock(content))
-	sc.Session.History = append(sc.Session.History, message)
-	sc.Messages = append(sc.Messages, message)
+	// The first thing the user typed becomes the session's hint, which is
+	// what `/load` shows to identify the session.
+	if sc.Session.Hint == "" {
+		sc.Session.Hint = content
+	}
+
+	sc.Messages = append(sc.Messages, anthropic.NewUserMessage(anthropic.NewTextBlock(content)))
 }
 
 func (sc *ScoutClient) AddAssistantMessage(response *anthropic.Message) {
@@ -65,9 +69,7 @@ func (sc *ScoutClient) AddAssistantMessage(response *anthropic.Message) {
 		return
 	}
 
-	message := anthropic.NewAssistantMessage(assistantContent...)
-	sc.Messages = append(sc.Messages, message)
-	sc.Session.History = append(sc.Session.History, message)
+	sc.Messages = append(sc.Messages, anthropic.NewAssistantMessage(assistantContent...))
 }
 
 func (sc *ScoutClient) params() anthropic.MessageNewParams {
@@ -89,22 +91,21 @@ func (sc *ScoutClient) params() anthropic.MessageNewParams {
 	}
 }
 
+// SaveSession persists the conversation. sc.Messages is the single source of
+// truth for history -- it is the slice actually sent to the API, and it is
+// the only one that carries tool results -- so the session is synced from it
+// at save time rather than being appended to in parallel.
 func (sc *ScoutClient) SaveSession() error {
-	sessionDir := fmt.Sprintf("%s/sessions", os.Getenv("HOME")+"/.scout")
-	sessionFile := fmt.Sprintf("%s/%s.json", sessionDir, sc.Session.SessionID)
+	sc.Session.History = sc.Messages
+	return sc.Session.Save()
+}
 
-	file, err := os.Create(sessionFile)
-	if err != nil {
-		return fmt.Errorf("failed to create session file: %v", err)
-	}
-	defer file.Close()
-
-	err = json.NewEncoder(file).Encode(sc.Session)
-	if err != nil {
-		return fmt.Errorf("failed to encode session to file: %v", err)
-	}
-
-	return nil
+// ResumeSession switches the client to a previously saved conversation,
+// replacing the in-memory history. Subsequent saves write back to the
+// resumed session's file rather than starting a new one.
+func (sc *ScoutClient) ResumeSession(session *ChatSession) {
+	sc.Session = session
+	sc.Messages = session.History
 }
 
 // SendMessage streams the next assistant turn, writing thinking, text and tool
@@ -160,8 +161,6 @@ func (sc *ScoutClient) SendMessage(ctx context.Context) (*anthropic.Message, err
 			}
 		}
 	}
-
-	sc.Session.History = append(sc.Session.History, message.ToParam())
 
 	if err := stream.Err(); err != nil {
 		return nil, err

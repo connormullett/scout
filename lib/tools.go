@@ -3,12 +3,15 @@ package lib
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	mapstructure "github.com/mitchellh/mapstructure"
@@ -252,6 +255,78 @@ type ShellCommandParams struct {
 	Command string `json:"command" mapstructure:"command"`
 }
 
+// defaultShellCommandTimeout bounds how long a single shell_command
+// invocation is allowed to run before it is forcibly killed. This prevents
+// long-running/blocking commands (dev servers, `tail -f`, interactive
+// prompts, backgrounded processes, etc.) from hanging the tool call forever.
+// It can be overridden via the SCOUT_SHELL_TIMEOUT_SECONDS env var.
+const defaultShellCommandTimeout = 2 * time.Minute
+
+// shellCommandWaitDelay is passed through to exec.Cmd.WaitDelay. Once the
+// context is cancelled/times out and the process (group) has been signalled,
+// this is the grace period before Go forcibly closes the stdout/stderr pipes
+// even if some descendant process is still holding them open. Without this,
+// an orphaned child that inherited the pipes can make Wait() block forever
+// even after the main process has been killed.
+const shellCommandWaitDelay = 5 * time.Second
+
+func shellCommandTimeout() time.Duration {
+	if v := os.Getenv("SCOUT_SHELL_TIMEOUT_SECONDS"); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+	}
+	return defaultShellCommandTimeout
+}
+
+// maxShellOutputBytes caps how much command output is handed back to the
+// model. Without a cap, a single command can return megabytes: `go doc -all`
+// on a large SDK emits ~1.8MB, which is ~760k tokens in one tool_result.
+// The API does not reject that -- it fits a 1M-token context -- so instead
+// of failing fast the request spends minutes in prefill with nothing
+// streaming back, which reads as a hang. It then poisons every later turn,
+// since the full result is resent as conversation history each time.
+const maxShellOutputBytes = 32 * 1024
+
+// truncateShellOutput keeps the head and tail of oversized output and
+// replaces the middle with an explicit marker. Both ends matter: the head
+// carries the command's framing, and the tail carries the errors and
+// summaries that most tools print last. The marker tells the model the
+// output was cut so it narrows the command instead of assuming it read
+// everything.
+func truncateShellOutput(output []byte) string {
+	if len(output) <= maxShellOutputBytes {
+		return string(output)
+	}
+
+	head := maxShellOutputBytes / 2
+	tail := maxShellOutputBytes - head
+
+	return fmt.Sprintf(
+		"%s\n\n[... %d of %d bytes elided: output exceeded the %d byte limit. "+
+			"Re-run a narrower command (grep, head, sed -n) to see the rest ...]\n\n%s",
+		trimPartialLine(output[:head], false),
+		len(output)-head-tail, len(output), maxShellOutputBytes,
+		trimPartialLine(output[len(output)-tail:], true),
+	)
+}
+
+// trimPartialLine drops the incomplete line at a cut point so the model is
+// never handed a half-sliced line. leading trims from the start of the
+// slice, otherwise the end is trimmed.
+func trimPartialLine(b []byte, leading bool) string {
+	if leading {
+		if i := bytes.IndexByte(b, '\n'); i >= 0 {
+			return string(b[i+1:])
+		}
+		return string(b)
+	}
+	if i := bytes.LastIndexByte(b, '\n'); i >= 0 {
+		return string(b[:i])
+	}
+	return string(b)
+}
+
 func ExecuteShellCommand(params any) string {
 	var oParams ShellCommandParams
 	err := mapstructure.Decode(params, &oParams)
@@ -264,15 +339,34 @@ func ExecuteShellCommand(params any) string {
 		return "error: no command provided"
 	}
 
-	shell, flag := shellInterpreter()
-	cmd := exec.Command(shell, flag, command)
+	timeout := shellCommandTimeout()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Sprintf("error: failed to execute command: %v\noutput:\n%s", err, output)
+	shell, flag := shellInterpreter()
+	cmd := exec.CommandContext(ctx, shell, flag, command)
+
+	// Run in its own process group and give Go a grace period to forcibly
+	// close the I/O pipes, so the call can never hang forever even if the
+	// command spawns background/orphaned children.
+	setNewProcessGroup(cmd)
+	cmd.WaitDelay = shellCommandWaitDelay
+	cmd.Cancel = func() error {
+		return killProcessGroup(cmd)
 	}
 
-	return string(output)
+	output, err := cmd.CombinedOutput()
+	text := truncateShellOutput(output)
+
+	if ctx.Err() == context.DeadlineExceeded {
+		return fmt.Sprintf("error: command timed out after %s and was killed\noutput so far:\n%s", timeout, text)
+	}
+
+	if err != nil {
+		return fmt.Sprintf("error: failed to execute command: %v\noutput:\n%s", err, text)
+	}
+
+	return text
 }
 
 // shellInterpreter returns the shell binary and the flag used to run a

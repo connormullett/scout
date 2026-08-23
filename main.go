@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/connormullett/scout/lib"
@@ -46,11 +47,31 @@ func main() {
 
 	for {
 		// get user input
-		input := lib.Scan(scanner, " > ")
-		if input == "exit" {
+		input := strings.TrimSpace(lib.Scan(scanner, " > "))
+		switch input {
+		case "":
+			continue
+
+		case "exit":
 			fmt.Println("Exiting...")
 			return
+
+		case "/load":
+			session, err := lib.SelectSession(scanner, client.Cwd)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "failed to load session: %v\n", err)
+				continue
+			}
+			if session == nil {
+				// nothing to load, or the user cancelled
+				continue
+			}
+
+			client.ResumeSession(session)
+			fmt.Printf("resumed session %s (%d messages)\n", session.SessionID, len(session.History))
+			continue
 		}
+
 		client.AddMessage(input)
 
 		stop := false
