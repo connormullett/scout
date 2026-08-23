@@ -13,16 +13,21 @@ import (
 )
 
 func main() {
+	subcommand := ""
 	if len(os.Args) > 1 {
-		subcommand := os.Args[1]
-		if subcommand == "init" {
-			err := lib.InitCommand()
-			if err != nil {
-				log.Fatal(err)
-			}
-			fmt.Println("Configuration initialized successfully.")
-			return
+		subcommand = os.Args[1]
+	}
+
+	switch subcommand {
+	case "init":
+		err := lib.InitCommand()
+		if err != nil {
+			log.Fatal(err)
 		}
+		fmt.Println("Configuration initialized successfully.")
+		return
+	default:
+		// Proceed with main command logic if no valid subcommand is found or arguments are incomplete
 	}
 
 	err := lib.EnsureConfigDirExists()
