@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"os"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -12,8 +11,6 @@ import (
 )
 
 const (
-	MAX_TOKENS = 1024
-
 	// ANSI escapes used to visually separate thinking from the final answer.
 	dim   = "\033[2;3m"
 	reset = "\033[0m"
@@ -23,15 +20,17 @@ type ScoutClient struct {
 	Client   anthropic.Client
 	Messages []anthropic.MessageParam
 	Model    anthropic.Model
+	Config   *Config
 	Out      io.Writer
 }
 
-func CreateClient(apiKey, model string) *ScoutClient {
-	client := anthropic.NewClient(option.WithAPIKey(apiKey), option.WithBaseURL("http://localhost:11434"))
+func CreateClient(config *Config) *ScoutClient {
+	client := anthropic.NewClient(option.WithAPIKey(config.APIKey), option.WithBaseURL(config.BaseURL))
 	return &ScoutClient{
 		Client:   client,
-		Model:    model,
+		Model:    anthropic.Model(config.Model),
 		Messages: []anthropic.MessageParam{},
+		Config:   config,
 		Out:      os.Stdout,
 	}
 }
@@ -61,7 +60,10 @@ func (sc *ScoutClient) params() anthropic.MessageNewParams {
 		Messages:   sc.Messages,
 		Tools:      Tools,
 		ToolChoice: ToolChoice,
-		MaxTokens:  MAX_TOKENS,
+		MaxTokens:  int64(sc.Config.MaxTokens),
+		System: []anthropic.TextBlockParam{
+			{Text: "you are scout, a helpful assistant that can run tools on the user's behalf"},
+		},
 		Thinking: anthropic.ThinkingConfigParamUnion{
 			OfAdaptive: &anthropic.ThinkingConfigAdaptiveParam{
 				// Without this, thinking blocks stream with empty text.
@@ -74,8 +76,6 @@ func (sc *ScoutClient) params() anthropic.MessageNewParams {
 // SendMessage streams the next assistant turn, writing thinking, text and tool
 // calls to sc.Out as they arrive, and returns the accumulated message.
 func (sc *ScoutClient) SendMessage(ctx context.Context) (*anthropic.Message, error) {
-	log.Println("Sending message with", len(sc.Messages), "messages to model", sc.Model)
-
 	stream := sc.Client.Messages.NewStreaming(ctx, sc.params())
 
 	message := anthropic.Message{}
@@ -125,7 +125,6 @@ func (sc *ScoutClient) SendMessage(ctx context.Context) (*anthropic.Message, err
 
 // ExecuteTool runs a single tool call and returns the tool_result block for it.
 func (sc *ScoutClient) ExecuteTool(toolID, toolName string, params any) anthropic.ContentBlockParamUnion {
-	log.Println("Calling tool:", toolName, "with params:", params)
 
 	toolFunc, exists := ToolMappings[toolName]
 	if !exists {
@@ -133,7 +132,6 @@ func (sc *ScoutClient) ExecuteTool(toolID, toolName string, params any) anthropi
 	}
 
 	toolResult := toolFunc(params)
-	log.Println("Tool", toolName, "returned result:", toolResult)
 
 	return anthropic.NewToolResultBlock(toolID, toolResult, false)
 }

@@ -13,7 +13,27 @@ import (
 )
 
 func main() {
-	client := lib.CreateClient("api_key", "gemma4:e4b")
+	subcommand := os.Args[1]
+	if subcommand == "init" {
+		err := lib.InitCommand()
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("Configuration initialized successfully.")
+		return
+	}
+
+	err := lib.EnsureConfigDirExists()
+	if err != nil {
+		fmt.Println("No configuration found, run `scout init` to create a configuration file.")
+	}
+
+	config, err := lib.LoadConfig()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	client := lib.CreateClient(config)
 	ctx := context.Background()
 	scanner := bufio.NewScanner(os.Stdin)
 
@@ -45,7 +65,6 @@ func main() {
 
 			client.AddAssistantMessage(response)
 
-			log.Println("Stop reason:", response.StopReason)
 			switch response.StopReason {
 			case anthropic.StopReasonToolUse:
 				// run every tool call in this turn, then hand all the results
@@ -69,7 +88,6 @@ func main() {
 				stop = true
 
 			default:
-				log.Println("Unknown stop reason:", response.StopReason)
 				stop = true
 			}
 		}
