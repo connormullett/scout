@@ -22,17 +22,17 @@ func InitCommand() error {
 	scanner := bufio.NewScanner(os.Stdin)
 
 	var config *Config
-	apiKey := Scan(scanner, "Enter your API key")
+	apiKey := Scan(scanner, "Enter your API key: ")
 	if apiKey == "" {
 		return fmt.Errorf("API key cannot be empty")
 	}
 
-	model := Scan(scanner, "Enter the model to use (e.g., 'gemma4:e4b')")
+	model := Scan(scanner, "Enter the model to use (e.g., 'gemma4:e4b'): ")
 	if model == "" {
 		model = viper.GetString("model")
 	}
 
-	maxTokensStr := Scan(scanner, "Enter the maximum number of tokens to use (default 10000)")
+	maxTokensStr := Scan(scanner, "Enter the maximum number of tokens to use (default 10000): ")
 	if maxTokensStr == "" {
 		maxTokensStr = strconv.Itoa(viper.GetInt("max_tokens"))
 	}
@@ -41,7 +41,7 @@ func InitCommand() error {
 		return fmt.Errorf("invalid max tokens value: %v", err)
 	}
 
-	baseURL := Scan(scanner, "Enter the base URL for the API (default http://localhost:11434)")
+	baseURL := Scan(scanner, "Enter the base URL for the API (default http://localhost:11434): ")
 	if baseURL == "" {
 		baseURL = viper.GetString("base_url")
 	}
@@ -61,7 +61,7 @@ func InitCommand() error {
 }
 
 func Scan(scanner *bufio.Scanner, prompt string) string {
-	fmt.Fprintf(os.Stdout, "%s: ", prompt)
+	fmt.Fprintf(os.Stdout, "%s", prompt)
 	if !scanner.Scan() {
 		fmt.Fprintln(os.Stderr, "Error reading input")
 		os.Exit(1)
