@@ -46,17 +46,7 @@ func main() {
 
 	for {
 		// get user input
-		lib.Scan(scanner, " > ")
-		fmt.Print(" > ")
-
-		if !scanner.Scan() {
-			if err := scanner.Err(); err != nil {
-				log.Fatal(err)
-			}
-			return // stdin closed
-		}
-
-		input := scanner.Text()
+		input := lib.Scan(scanner, " > ")
 		if input == "exit" {
 			fmt.Println("Exiting...")
 			return
