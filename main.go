@@ -89,5 +89,10 @@ func main() {
 				stop = true
 			}
 		}
+
+		err := client.SaveSession()
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 }

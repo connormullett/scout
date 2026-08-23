@@ -2,12 +2,14 @@ package lib
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/google/uuid"
 )
 
 const (
@@ -16,12 +18,19 @@ const (
 	reset = "\033[0m"
 )
 
+type ChatSession struct {
+	SessionID string
+	History   []anthropic.MessageParam
+	// todo: add mutex for concurrency safety
+}
+
 type ScoutClient struct {
 	Client   anthropic.Client
 	Messages []anthropic.MessageParam
 	Model    anthropic.Model
 	Config   *Config
 	Out      io.Writer
+	Session  *ChatSession
 }
 
 func CreateClient(config *Config) *ScoutClient {
@@ -32,11 +41,16 @@ func CreateClient(config *Config) *ScoutClient {
 		Messages: []anthropic.MessageParam{},
 		Config:   config,
 		Out:      os.Stdout,
+		Session: &ChatSession{
+			SessionID: uuid.New().String(),
+			History:   []anthropic.MessageParam{},
+		},
 	}
 }
 
 func (sc *ScoutClient) AddMessage(content string) {
 	message := anthropic.NewUserMessage(anthropic.NewTextBlock(content))
+	sc.Session.History = append(sc.Session.History, message)
 	sc.Messages = append(sc.Messages, message)
 }
 
@@ -51,7 +65,9 @@ func (sc *ScoutClient) AddAssistantMessage(response *anthropic.Message) {
 		return
 	}
 
-	sc.Messages = append(sc.Messages, anthropic.NewAssistantMessage(assistantContent...))
+	message := anthropic.NewAssistantMessage(assistantContent...)
+	sc.Messages = append(sc.Messages, message)
+	sc.Session.History = append(sc.Session.History, message)
 }
 
 func (sc *ScoutClient) params() anthropic.MessageNewParams {
@@ -71,6 +87,24 @@ func (sc *ScoutClient) params() anthropic.MessageNewParams {
 			},
 		},
 	}
+}
+
+func (sc *ScoutClient) SaveSession() error {
+	sessionDir := fmt.Sprintf("%s/sessions", os.Getenv("HOME")+"/.scout")
+	sessionFile := fmt.Sprintf("%s/%s.json", sessionDir, sc.Session.SessionID)
+
+	file, err := os.Create(sessionFile)
+	if err != nil {
+		return fmt.Errorf("failed to create session file: %v", err)
+	}
+	defer file.Close()
+
+	err = json.NewEncoder(file).Encode(sc.Session)
+	if err != nil {
+		return fmt.Errorf("failed to encode session to file: %v", err)
+	}
+
+	return nil
 }
 
 // SendMessage streams the next assistant turn, writing thinking, text and tool
@@ -126,6 +160,8 @@ func (sc *ScoutClient) SendMessage(ctx context.Context) (*anthropic.Message, err
 			}
 		}
 	}
+
+	sc.Session.History = append(sc.Session.History, message.ToParam())
 
 	if err := stream.Err(); err != nil {
 		return nil, err

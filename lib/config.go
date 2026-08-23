@@ -124,5 +124,11 @@ func InitConfigDir() error {
 		return fmt.Errorf("failed to create skills directory: %v", err)
 	}
 
+	sessionsDir := fmt.Sprintf("%s/sessions", configDir)
+	err = os.MkdirAll(sessionsDir, 0755)
+	if err != nil {
+		return fmt.Errorf("failed to create sessions directory: %v", err)
+	}
+
 	return nil
 }
