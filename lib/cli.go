@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -12,12 +13,17 @@ import (
 
 func InitCommand() error {
 	SetConfigDefaults()
-	err := EnsureConfigDirExists()
-	if err != nil {
-		initErr := InitConfigDir()
-		if initErr != nil {
-			return initErr
+
+	if err := EnsureConfigDirExists(); err != nil {
+		// Config directory doesn't exist, create it first
+		if err := InitConfigDir(); err != nil {
+			return fmt.Errorf("initializing config directory: %w", err)
 		}
+	}
+
+	// Initialize memory directories and files
+	if err := InitializeMemoryStructure(); err != nil {
+		return fmt.Errorf("initializing memory structure: %w", err)
 	}
 
 	scanner := bufio.NewScanner(os.Stdin)
@@ -84,6 +90,7 @@ func normalizeYesNo(s string) string {
 	}
 }
 
+// Scan reads input from the scanner with a prompt
 func Scan(scanner *bufio.Scanner, prompt string) string {
 	fmt.Fprintf(os.Stdout, "%s", prompt)
 	if !scanner.Scan() {
@@ -99,8 +106,7 @@ const maxHintWidth = 72
 
 // SelectSession renders the saved sessions for cwd as a numbered list and
 // returns the one the user picks. It returns nil when there is nothing to
-// load or the user cancels, which the caller treats as a no-op rather than
-// an error.
+// load or the user cancels, which the caller treats as a no-op rather than an error.
 func SelectSession(scanner *bufio.Scanner, cwd string) (*ChatSession, error) {
 	summaries, err := ListSessions(cwd)
 	if err != nil {
@@ -151,4 +157,86 @@ func formatHint(hint string) string {
 		return string(runes[:maxHintWidth-1]) + "\u2026"
 	}
 	return hint
+}
+
+// InitializeMemoryStructure creates the memory directories and initial files
+func InitializeMemoryStructure() error {
+	memoryDir := filepath.Join(getScoutHomeDir(), "memory")
+
+	if err := os.MkdirAll(memoryDir, 0o750); err != nil {
+		return fmt.Errorf("creating memory directory: %w", err)
+	}
+
+	files := map[string]string{
+		"memories.txt": `# Memories
+This file stores important conversations and decisions.
+
+## Usage Examples
+- Store key decisions and outcomes
+- Track lessons learned from completed tasks
+- Reference past discussions when working on similar projects
+`,
+		"goals.txt": `# Goals
+This file tracks project objectives and goals.
+
+## Format
+- Primary goal: [description]
+- Secondary goals: [list of additional goals]
+- Milestones: [track progress]
+`,
+		"learning.txt": `# Learning Journey
+This file records what you've learned over time.
+
+## Tips for Effective Learning Notes
+- Date your entries (YYYY-MM-DD)
+- Note the context/problem that led to learning
+- Summarize key takeaways in 1-3 sentences
+- Link to relevant resources if applicable
+`,
+		"README.md": `# Scout Memory
+
+Persistent storage for your development journey.
+
+## Memory Files
+
+| File | Purpose |
+|------|---------|
+| memories.txt | Important conversations, decisions, lessons |
+| goals.txt | Project objectives and targets |
+| learning.txt | Knowledge acquired over time |
+| README.md | This documentation |
+
+## Usage
+
+### Before Starting a Task
+Check relevant memory files for context from previous conversations.
+
+### When Completing Work
+Write summaries to memory (e.g., "Completed X feature, Y lessons learned").
+
+### When Stuck
+Review learning.txt and memories.txt for similar past solutions.
+
+For detailed instructions, see the individual README in ~/.scout/memory/
+`,
+	}
+
+	for filename, content := range files {
+		filePath := filepath.Join(memoryDir, filename)
+
+		os.Remove(filePath)
+
+		if err := os.WriteFile(filePath, []byte(content), 0o644); err != nil {
+			return fmt.Errorf("creating %s: %w", filename, err)
+		}
+	}
+
+	fmt.Printf("Memory structure initialized at ~/.scout/memory/\n")
+	return nil
+}
+
+// getScoutHomeDir returns the home directory for Scout files (~/.scout/)
+func getScoutHomeDir() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".scout")
 }
